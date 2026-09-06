@@ -34,12 +34,42 @@
 | checkpoint | date | DMG dl | Stars | Forks | ext Issues | Disc | ext PRs | meaningful users | non-Hermes requests |
 |---|---|---|---|---|---|---|---|---|---|
 | **Day 0** | 2026-08-29 | **2** | **1** | **1** | **0** | **1**（公告帖 #16，maintainer） | **1**（PR #4 mariopablobarron） | **0** | **0** |
-| Day 7 | 2026-09-05 | — | — | — | — | — | — | — | — |
+| **Day 7** | 2026-09-05 | **2** | **4** | **1** | **0** | **2**（#16 公告 + #18 v1.1.1 发布帖，均 maintainer） | **1**（PR #4 mariopablobarron） | **0** | **0** |
 | Day 30 | 2026-09-28 | — | — | — | — | — | — | — | — |
 | Day 60 | 2026-10-28 | — | — | — | — | — | — | — | — |
 | Day 90 | 2026-11-27 | — | — | — | — | — | — | — | — |
 
 > Day 0 baseline captured live from GitHub API on 2026-08-29 (not hand-filled).
+> Day 7 values re-read live from GitHub API on 2026-09-06 immediately before commit（closeout executed 2026-09-06; Day 7 window date = 2026-09-05）.
+
+## Day 7 review — decision（2026-09-06 closeout）
+
+**Decision**
+
+- P0 product defects: **0**
+- P1 product defects: **0**
+- One P1 candidate was investigated during the window and **closed as local stale-installation state** — NOT an external Desktop product defect; no product code shipped for it. Recorded only as:
+
+  `P1 candidate → investigated → local environment → remediated → CLOSED`
+
+- Desktop 0.1.1: **NO-GO**
+- HUD v1.1.3: **NO-GO**
+- Next priority: **Distribution + Observation**
+- Show HN: **UNBLOCKED**
+- Next formal checkpoint: **Day 30 — 2026-09-28**
+
+**Strict evidence notes**
+
+- **Meaningful external users = 0.** The only external human signal is mariopablobarron's
+  merged PR #4 (2026-08-29, +119/−2 functional fix) — counted under external PRs = 1. He is
+  NOT counted as a meaningful user: his entire repo engagement is that single PR, with zero
+  issues / comments / discussion / review interaction (API-verified 2026-09-06), which does not
+  clear the "beyond a single drive-by action" bar — consistent with the Day 0 baseline, where
+  the same author's open PR also counted 0. Download counts are not user evidence.
+- **Non-Hermes collector requests = 0** — no public evidence exists.
+- Week-1 trend: stars 1→4 · forks 1 · external issues 0 · discussions 2（均 maintainer 帖）·
+  external PRs 1（merged）. Minimum-signal thresholds（≥25 dl / ≥5 meaningful users / ≥3
+  threads）not approached — no action beyond Distribution + Observation.
 
 ## Issue triage policy
 
