@@ -1,4 +1,4 @@
-[English](README.en.md) | **中文**
+**English** | [中文](README.md)
 
 # Hermes HUD 🛰️
 
@@ -26,7 +26,28 @@ hermes dashboard --host 127.0.0.1 --port 9119 --no-open
 ```
 
 > Prebuilt frontend ships in the repo — no web UI rebuild needed.
-> Full install/uninstall/troubleshooting: **[INSTALL.md](INSTALL.md)** · First-run guide: **[FIRST_5_MINUTES.md](FIRST_5_MINUTES.md)** · Enabling Discussions (maintainers): **[DISCUSSIONS_GUIDE.md](DISCUSSIONS_GUIDE.md)**.
+> Full install/uninstall/troubleshooting: **[INSTALL.md](INSTALL.md)** · First-run guide: **[FIRST_5_MINUTES.md](FIRST_5_MINUTES.md)**.
+
+## 🖥 Desktop Alpha for macOS
+
+Native macOS app for Apple Silicon — a desktop window into Hermes:
+Agent Timeline, Skill Analytics, Cost Intelligence, health, sessions,
+cron jobs, channels, errors and incidents.
+
+- **Local-first · read-only · zero outbound product telemetry**
+- Automatically discovers Hermes and connects to an existing Dashboard,
+  or safely starts the local Dashboard
+- **Developer ID signed + Apple notarized** — accepted by Gatekeeper
+  without an "Open Anyway" workaround
+- Alpha requirements: **Hermes Agent ≥ 0.19.0 + Hermes HUD plugin ≥ 1.1.1**
+  (API schema 1), **Apple Silicon (arm64) only**
+- No auto-updater yet
+- The Web HUD remains fully supported; Desktop is an additional surface,
+  not a replacement
+
+[Download Desktop Alpha](https://github.com/Diabloluo/hermes-hud/releases/tag/desktop-v0.1.0-alpha)
+· [Install](docs/desktop/INSTALL_MACOS.md)
+· [Security](docs/desktop/SECURITY.md)
 
 ## 🎬 Demo (19.5s · sanitized demo data)
 
@@ -165,7 +186,8 @@ Hermes data sources (read-only)
 ## 🧩 Compatibility
 
 - **Tested: macOS**; Linux expected to work (community testing welcome); Windows experimental
-- Hermes v0.20+ (Dashboard plugin SDK: manifest.json + plugin_api.py + IIFE bundle)
+- Hermes Agent ≥ 0.19.0
+  (Dashboard plugin SDK: manifest.json + plugin_api.py + IIFE bundle)
 - The plugin itself survives Hermes upgrades; rebuild the web UI only if needed (`npm run build`)
 - Full uninstall: `hermes plugins disable hermes-hud` + remove the plugin directory
 
@@ -173,8 +195,11 @@ Hermes data sources (read-only)
 
 - **Issues**: [Bug report](https://github.com/Diabloluo/hermes-hud/issues/new?template=bug_report.yml) / [Compatibility report](https://github.com/Diabloluo/hermes-hud/issues/new?template=compatibility_report.yml)
 - **Contributing**: [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, tests, PR workflow and security boundary
-- **Maintainers**: optionally enable GitHub community-event notifications (Star / Issue / Fork → Telegram) via `.github/workflows/community-telegram.yml`
-- **Discussions**: not enabled yet on this repo; suggested categories once enabled: General / Installation Help / Compatibility / Ideas / Show and Tell
+- **Maintainers**: GitHub community-event notifications (Star / Issue / Fork → Telegram) are configured through `.github/workflows/community-telegram.yml`
+- **Discussions**:
+  [Open Discussions](https://github.com/Diabloluo/hermes-hud/discussions)
+  — announcements, questions, ideas and show-and-tell
+  (category guidance: [DISCUSSIONS_GUIDE.md](DISCUSSIONS_GUIDE.md))
 
 ## 📄 License
 
