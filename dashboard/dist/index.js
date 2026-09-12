@@ -2106,7 +2106,7 @@
 
       function connect() {
         if (!alive) return;
-        SDK.buildWsUrl(API + "/events")
+        SDK.buildWsUrl(API + "/events", { locale: CURRENT_LOCALE })
           .then(function (url) {
             if (!alive) return;
             ws = new WebSocket(url);
@@ -2147,7 +2147,9 @@
       }
       connect();
       return function () { alive = false; if (ws) { try { ws.close(); } catch (e) {} } };
-    }, []);
+      // hostI18n.locale 依赖：语言切换时断开重连，WS 带上新语言（否则要等
+      // 断线重试或刷新页面才会用上新 locale，见下方 stream_events 的说明）。
+    }, [hostI18n.locale]);
 
     // 轮询事件也合并（WS 不可用时仍能看到增量）
     useEffect(function () {

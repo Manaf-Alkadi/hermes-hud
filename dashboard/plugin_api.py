@@ -499,15 +499,22 @@ async def stream_events(ws: WebSocket):
 
     鉴权委托给 dashboard 的标准 WS 门（_ws_auth_ok），兼容 loopback
     token / gated ticket / internal 三种模式。
+
+    locale：WS 推送内容本身不含翻译文案（health 只带 overall/counts 两个状态
+    码，文案由前端 tt() 渲染），但 WS 和 REST /snapshot 共用同一份
+    _get_snapshot() 缓存 + _maybe_telemetry() 落盘。不传 locale 会导致落盘的
+    incident title/detail 用默认 zh 渲染，即使浏览器语言是别的——所以这里仍
+    要从 query string 读 locale 并往下传，即便 WS 自己用不上翻译后的文本。
     """
     from hermes_cli.web_server import _ws_auth_ok
     if not _ws_auth_ok(ws):
         await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
         return
     await ws.accept()
+    locale = resolve_locale(ws.query_params.get("locale"))
     try:
         while True:
-            snap = await _get_snapshot()
+            snap = await _get_snapshot(locale)
             health = snap["_health"]
             events = snap.get("_events", [])
             try:
