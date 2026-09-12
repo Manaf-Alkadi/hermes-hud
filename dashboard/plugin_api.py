@@ -29,6 +29,7 @@ if str(_HUD_DIR) not in __import__("sys").path:
     __import__("sys").path.insert(0, str(_HUD_DIR))
 
 from hud import collectors, rules, storage  # noqa: E402
+from hud.i18n import resolve_locale  # noqa: E402
 from hud.redaction import redact_line  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -164,12 +165,17 @@ def _maybe_telemetry(snap: dict, health: dict) -> None:
         pass
 
 
-async def _get_snapshot() -> dict:
+async def _get_snapshot(locale: str = "zh") -> dict:
     """共享快照：2 秒内复用 + 单飞锁。
 
     REST /snapshot 与 WebSocket /events 共用同一份快照，
     同一时间不会并发重复跑完整 collector，telemetry 落盘也由
     限频统一控制 —— 前端 2 秒级实时体验不变。
+
+    locale 说明：collector/health 文案跟随触发本次刷新的请求的 locale。
+    缓存粒度仍是全局单份（不按 locale 分桶）——单用户 loopback dashboard
+    下这足够；两个浏览器标签同时开不同语言时，TTL 窗口内（≤2s）可能有一份
+    暂时用了另一个标签的语言，下一次刷新即自我纠正。
     """
     global _last_snapshot, _last_health
     cache = _snapshot_cache
@@ -180,8 +186,8 @@ async def _get_snapshot() -> dict:
         # 双检：等待锁期间可能已被其他协程填充
         if cache["data"] is not None and time.time() - cache["ts"] < _SNAPSHOT_TTL:
             return cache["data"]
-        snap = await asyncio.to_thread(collectors.build_snapshot)
-        health = rules.evaluate_snapshot(snap)
+        snap = await asyncio.to_thread(collectors.build_snapshot, locale)
+        health = rules.evaluate_snapshot(snap, locale)
         events = _detect_events(snap, _last_snapshot)
         snap["_health"] = health
         snap["_events"] = events
@@ -198,9 +204,9 @@ async def _get_snapshot() -> dict:
 # ---------------------------------------------------------------------------
 
 @router.get("/snapshot")
-async def get_snapshot() -> dict:
+async def get_snapshot(locale: str = "zh") -> dict:
     """全量快照（约 2 秒刷新频率由前端控制，共享缓存 + 单飞）。"""
-    return await _get_snapshot()
+    return await _get_snapshot(resolve_locale(locale))
 
 
 @router.get("/timeline")
@@ -238,23 +244,27 @@ async def get_timeline_stats() -> dict:
 
 
 @router.get("/health")
-async def get_health() -> dict:
-    """只跑健康评估（轻量，不重算快照）+ API 版本契约（Desktop 协商用）。"""
+async def get_health(locale: str = "zh") -> dict:
+    """只跑健康评估（轻量，不重算快照）+ API 版本契约（Desktop 协商用）。
+
+    locale 只在需要重算快照时生效（见 _get_snapshot 的说明）；命中
+    _last_health 内存缓存时直接复用上一次快照算出的文案。
+    """
     from hud import version
     if _last_health is not None:
         out = dict(_last_health)
         out.update(version.api_version_payload())
         return out
-    snap = await _get_snapshot()
+    snap = await _get_snapshot(resolve_locale(locale))
     out = dict(snap["_health"])
     out.update(version.api_version_payload())
     return out
 
 
 @router.get("/data-quality")
-async def get_data_quality() -> dict:
+async def get_data_quality(locale: str = "zh") -> dict:
     """数据新鲜度与采集器健康状态。"""
-    snap = await _get_snapshot()
+    snap = await _get_snapshot(resolve_locale(locale))
     sections = {
         "gateway": snap.get("gateway", {}).get("error"),
         "system": snap.get("system", {}).get("error"),
@@ -330,9 +340,9 @@ async def get_tool_events(limit: int = Query(60, ge=1, le=300)) -> list[dict]:
 
 
 @router.get("/skills")
-async def get_skills() -> dict:
+async def get_skills(locale: str = "zh") -> dict:
     """技能目录统计（~/.hermes/skills 元数据，只读）。"""
-    return await asyncio.to_thread(collectors.collect_skills)
+    return await asyncio.to_thread(collectors.collect_skills, resolve_locale(locale))
 
 
 @router.get("/skills/analytics")
