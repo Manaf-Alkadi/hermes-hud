@@ -620,6 +620,14 @@
     return zh;
   }
 
+  /**
+   * 事故文案：优先用后端按请求语言渲染的 display_*，回退到 canonical
+   * title/detail（恒 zh）。/incidents 读的是 telemetry.db 历史行，只有
+   * canonical 字段，回退即可；见 hud/rules.py 的 _inc_text。
+   */
+  function incTitle(inc) { return inc.display_title || inc.title; }
+  function incDetail(inc) { return inc.display_detail || inc.detail; }
+
   function dtLocale() {
     if (CURRENT_LOCALE === "zh" || CURRENT_LOCALE === "zh-hant") return "zh-CN";
     if (CURRENT_LOCALE === "fr") return "fr-FR";
@@ -875,8 +883,8 @@
             : h("div", { className: "hud-scroll" },
               incidents.map(function (inc) {
                 return h("div", { key: inc.fingerprint, className: "hud-incident " + inc.severity },
-                  h("div", { style: { fontWeight: 600, fontSize: 13 } }, inc.title),
-                  h("div", { style: { opacity: 0.7, fontSize: 11.5, marginTop: 2 } }, inc.detail));
+                  h("div", { style: { fontWeight: 600, fontSize: 13 } }, incTitle(inc)),
+                  h("div", { style: { opacity: 0.7, fontSize: 11.5, marginTop: 2 } }, incDetail(inc)));
               })))),
 
       // 系统迷你
@@ -1425,10 +1433,10 @@
             (incidents || []).map(function (inc) {
               return h("div", { key: inc.id, className: "hud-incident " + inc.severity + " " + inc.status },
                 h("div", { style: { display: "flex", justifyContent: "space-between", gap: 8 } },
-                  h("div", { style: { fontWeight: 600, fontSize: 13 } }, inc.title),
+                  h("div", { style: { fontWeight: 600, fontSize: 13 } }, incTitle(inc)),
                   h(Badge, { variant: inc.status === "active" ? (inc.severity === "critical" ? "destructive" : "warning") : "secondary" },
                     inc.status === "active" ? tt("进行中") : tt("已恢复"))),
-                h("div", { style: { opacity: 0.7, fontSize: 11.5, marginTop: 2 } }, inc.detail),
+                h("div", { style: { opacity: 0.7, fontSize: 11.5, marginTop: 2 } }, incDetail(inc)),
                 h("div", { style: { opacity: 0.55, fontSize: 10.5, marginTop: 4 } },
                   tt("首次 ") + fmtTime(inc.first_seen) + tt(" · 末次 ") + fmtTime(inc.last_seen) +
                   tt(" · 观测 ") + (inc.observations != null ? inc.observations : inc.count) + tt(" 次") +

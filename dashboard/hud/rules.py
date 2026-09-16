@@ -11,9 +11,14 @@
 
 预算与阈值集中在这里，后续可改为从 config 读取（当前 MVP 用常量 + 环境变量覆盖）。
 
-i18n: message/title/detail 文案通过 .i18n.t() 按 locale 渲染（zh 原文不变，
-en/fr/ar 见 i18n.py）。locale 由调用方（plugin_api.py，读取请求的 locale
-query param）传入，默认 "zh" 保持历史行为不变。
+i18n: checks[].message 按 locale 渲染（zh 原文不变，en/fr/ar 见 i18n.py）。
+locale 由调用方（plugin_api.py，读取请求的 locale query param）传入，
+默认 "zh" 保持历史行为不变。
+
+事故文案分两套（见 _inc_text）：incidents[].title/detail 恒为 zh —— 它们
+是落盘 telemetry.db、state_changes 判定与 hud_alert 的 canonical 依据，
+不能随请求语言漂移；incidents[].display_title/display_detail 才按 locale
+渲染，仅供当前响应展示（不落盘）。
 """
 
 from __future__ import annotations
@@ -39,6 +44,27 @@ def _sev(level: str) -> str:
     return level  # "normal" / "warning" / "critical"
 
 
+def _inc_text(title_key: str, detail_key: str | None, locale: str, *,
+              detail_raw: str | None = None, **kwargs: Any) -> dict:
+    """Incident title/detail: canonical zh (persisted to telemetry.db, drives
+    state_changes and hud_alert) plus display_title/display_detail rendered
+    for the request locale (presentation only, never persisted).
+
+    ``detail_raw`` bypasses the template lookup for text that isn't
+    translated to begin with (e.g. a raw DB error string) — canonical and
+    display detail are then the same value.
+    """
+    title_zh = t(title_key, "zh", **kwargs)
+    title_disp = t(title_key, locale, **kwargs)
+    if detail_raw is not None:
+        detail_zh = detail_disp = detail_raw
+    else:
+        detail_zh = t(detail_key, "zh", **kwargs)
+        detail_disp = t(detail_key, locale, **kwargs)
+    return {"title": title_zh, "detail": detail_zh,
+            "display_title": title_disp, "display_detail": detail_disp}
+
+
 def evaluate_snapshot(snap: dict, locale: str = "zh") -> dict:
     checks: list[dict] = []
     incidents: list[dict] = []
@@ -59,8 +85,8 @@ def evaluate_snapshot(snap: dict, locale: str = "zh") -> dict:
         incidents.append({
             "fingerprint": "gateway:not-alive",
             "severity": "critical",
-            "title": t("gateway_not_alive_title", locale),
-            "detail": t("gateway_not_alive_detail", locale, pid=gw.get("pid"), state=gw.get("state")),
+            **_inc_text("gateway_not_alive_title", "gateway_not_alive_detail", locale,
+                        pid=gw.get("pid"), state=gw.get("state")),
         })
 
     # ---- warning: 状态文件陈旧（gateway_state.json 只在状态变化时写盘，
@@ -78,8 +104,7 @@ def evaluate_snapshot(snap: dict, locale: str = "zh") -> dict:
             incidents.append({
                 "fingerprint": "gateway:stale-state-file",
                 "severity": "warning",
-                "title": t("gateway_stale_title", locale),
-                "detail": t("gateway_stale_detail", locale, age=int(hb_age)),
+                **_inc_text("gateway_stale_title", "gateway_stale_detail", locale, age=int(hb_age)),
             })
     else:
         checks.append({"key": "gateway_heartbeat", "status": "warning", "severity": "warning",
@@ -98,8 +123,8 @@ def evaluate_snapshot(snap: dict, locale: str = "zh") -> dict:
         incidents.append({
             "fingerprint": "db:unreadable",
             "severity": "critical",
-            "title": t("db_unreadable_title", locale),
-            "detail": str(db.get("error"))[:200],
+            **_inc_text("db_unreadable_title", None, locale,
+                        detail_raw=str(db.get("error"))[:200]),
         })
 
     # ---- critical/warning: 磁盘 ----
@@ -109,14 +134,14 @@ def evaluate_snapshot(snap: dict, locale: str = "zh") -> dict:
             checks.append({"key": "disk", "status": "critical", "severity": "critical",
                            "message": t("disk_low", locale, free=disk_free, threshold=DISK_FREE_CRITICAL)})
             incidents.append({"fingerprint": "disk:critical", "severity": "critical",
-                              "title": t("disk_critical_title", locale),
-                              "detail": t("disk_free_detail", locale, free=disk_free)})
+                              **_inc_text("disk_critical_title", "disk_free_detail", locale,
+                                          free=disk_free)})
         elif disk_free < DISK_FREE_WARN:
             checks.append({"key": "disk", "status": "warning", "severity": "warning",
                            "message": t("disk_low", locale, free=disk_free, threshold=DISK_FREE_WARN)})
             incidents.append({"fingerprint": "disk:warn", "severity": "warning",
-                              "title": t("disk_warn_title", locale),
-                              "detail": t("disk_free_detail", locale, free=disk_free)})
+                              **_inc_text("disk_warn_title", "disk_free_detail", locale,
+                                          free=disk_free)})
         else:
             checks.append({"key": "disk", "status": "normal", "severity": "normal",
                            "message": t("disk_ok", locale, free=disk_free)})
@@ -136,8 +161,8 @@ def evaluate_snapshot(snap: dict, locale: str = "zh") -> dict:
         })
         if not mem_ok:
             incidents.append({"fingerprint": "mem:pressure", "severity": "warning",
-                              "title": t("memory_pressure_title", locale),
-                              "detail": t("memory_pressure_detail", locale, pct=mem["percent"])})
+                              **_inc_text("memory_pressure_title", "memory_pressure_detail", locale,
+                                          pct=mem["percent"])})
     else:
         checks.append({"key": "memory", "status": "warning", "severity": "warning",
                        "message": t("memory_unavailable", locale)})
@@ -152,20 +177,20 @@ def evaluate_snapshot(snap: dict, locale: str = "zh") -> dict:
             checks.append({"key": f"channel:{name}", "status": "warning", "severity": "warning",
                            "message": t("channel_attention", locale, name=name)})
             incidents.append({"fingerprint": f"channel:{name}:attention", "severity": "warning",
-                              "title": t("channel_attention_title", locale, name=name),
-                              "detail": t("channel_attention_detail", locale)})
+                              **_inc_text("channel_attention_title", "channel_attention_detail",
+                                          locale, name=name)})
         elif state != "connected":
             checks.append({"key": f"channel:{name}", "status": "critical", "severity": "critical",
                            "message": t("channel_disconnected", locale, name=name, state=state)})
             incidents.append({"fingerprint": f"channel:{name}:{state}", "severity": "critical",
-                              "title": t("channel_disconnected_title", locale, name=name),
-                              "detail": t("channel_disconnected_detail", locale, state=state)})
+                              **_inc_text("channel_disconnected_title", "channel_disconnected_detail",
+                                          locale, name=name, state=state)})
         elif age is not None and age > HEARTBEAT_CRITICAL:
             checks.append({"key": f"channel:{name}", "status": "warning", "severity": "warning",
                            "message": t("channel_stale", locale, name=name, age=int(age))})
             incidents.append({"fingerprint": f"channel:{name}:stale", "severity": "warning",
-                              "title": t("channel_stale_title", locale, name=name),
-                              "detail": t("channel_stale_detail", locale, age=int(age))})
+                              **_inc_text("channel_stale_title", "channel_stale_detail",
+                                          locale, name=name, age=int(age))})
         else:
             checks.append({"key": f"channel:{name}", "status": "normal", "severity": "normal",
                            "message": t("channel_ok", locale, name=name)})
@@ -180,8 +205,8 @@ def evaluate_snapshot(snap: dict, locale: str = "zh") -> dict:
         checks.append({"key": "error_burst", "status": "warning", "severity": "warning",
                        "message": t("error_burst", locale, count=err_count, threshold=ERROR_BURST_WARN)})
         incidents.append({"fingerprint": "logs:error-burst", "severity": "warning",
-                          "title": t("error_burst_title", locale),
-                          "detail": t("recent_errors_count", locale, count=err_count)})
+                          **_inc_text("error_burst_title", "recent_errors_count", locale,
+                                      count=err_count)})
     else:
         checks.append({"key": "error_burst", "status": "normal", "severity": "normal",
                        "message": t("recent_errors_count", locale, count=err_count)})
@@ -200,8 +225,8 @@ def evaluate_snapshot(snap: dict, locale: str = "zh") -> dict:
                        "message": t("launchd_unmanaged_plist" if ld.get("plist_exists")
                                     else "launchd_unmanaged_noplist", locale)})
         incidents.append({"fingerprint": "launchd:not-managed", "severity": "warning",
-                          "title": t("launchd_incident_title", locale),
-                          "detail": t("launchd_detail_plist_exists" if ld.get("plist_exists")
+                          **_inc_text("launchd_incident_title",
+                                      "launchd_detail_plist_exists" if ld.get("plist_exists")
                                       else "launchd_detail_missing", locale)})
 
     # ---- warning: Dashboard 未常驻 ----
@@ -214,8 +239,8 @@ def evaluate_snapshot(snap: dict, locale: str = "zh") -> dict:
         checks.append({"key": "dashboard", "status": "warning", "severity": "warning",
                        "message": t("dashboard_not_running", locale)})
         incidents.append({"fingerprint": "dashboard:not-running", "severity": "warning",
-                          "title": t("dashboard_not_running", locale),
-                          "detail": t("dashboard_not_running_detail", locale)})
+                          **_inc_text("dashboard_not_running", "dashboard_not_running_detail",
+                                      locale)})
 
     # ---- critical: Cron 连续失败 ----
     cron = snap.get("cron") or {}
@@ -226,10 +251,18 @@ def evaluate_snapshot(snap: dict, locale: str = "zh") -> dict:
                            "message": t("cron_fail_critical", locale, name=j["name"], streak=streak)})
             # 指纹稳定：不随 streak 变化（cron:<id>:fail），同一任务连续失败
             # 保持同一条事故生命周期；streak 放进 detail
-            last_error = j.get("last_error") or j.get("last_delivery_error") or t("none_value", locale)
-            incidents.append({"fingerprint": f"cron:{j['id']}:fail", "severity": "critical",
-                              "title": t("cron_fail_title", locale, name=j["name"]),
-                              "detail": t("cron_fail_detail", locale, streak=streak, last_error=last_error)})
+            # The "no error recorded" placeholder is itself translated, so the
+            # canonical and the display detail need their own rendering of it.
+            raw_error = j.get("last_error") or j.get("last_delivery_error")
+            incidents.append({
+                "fingerprint": f"cron:{j['id']}:fail", "severity": "critical",
+                "title": t("cron_fail_title", "zh", name=j["name"]),
+                "detail": t("cron_fail_detail", "zh", streak=streak,
+                            last_error=raw_error or t("none_value", "zh")),
+                "display_title": t("cron_fail_title", locale, name=j["name"]),
+                "display_detail": t("cron_fail_detail", locale, streak=streak,
+                                    last_error=raw_error or t("none_value", locale)),
+            })
         elif streak >= 1:
             checks.append({"key": f"cron:{j['id']}", "status": "warning", "severity": "warning",
                            "message": t("cron_fail_warn", locale, name=j["name"], streak=streak)})
@@ -248,8 +281,8 @@ def evaluate_snapshot(snap: dict, locale: str = "zh") -> dict:
                        "message": t("budget_over", locale, cost=today_cost, budget=DAILY_BUDGET_USD,
                                     pct=BUDGET_WARN_RATIO * 100)})
         incidents.append({"fingerprint": "budget:daily", "severity": "warning",
-                          "title": t("budget_incident_title", locale),
-                          "detail": t("budget_incident_detail", locale, cost=today_cost, budget=DAILY_BUDGET_USD)})
+                          **_inc_text("budget_incident_title", "budget_incident_detail", locale,
+                                      cost=today_cost, budget=DAILY_BUDGET_USD)})
     elif DAILY_BUDGET_USD > 0:
         checks.append({"key": "budget", "status": "normal", "severity": "normal",
                        "message": t("budget_ok_with_budget", locale, cost=today_cost, budget=DAILY_BUDGET_USD)})

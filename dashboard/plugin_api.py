@@ -43,13 +43,20 @@ store = storage.TelemetryStore()
 # ---------------------------------------------------------------------------
 
 _last_snapshot: Optional[dict] = None
-_last_health: Optional[dict] = None
+# 按 locale 分桶：/health 命中缓存时直接回给客户端，含事故展示文案，
+# 单份全局缓存会把另一个语言的内容回给当前请求（见 _get_snapshot）。
+_last_health: dict[str, dict] = {}
+# overall 是 normal/warning/critical 代码（与语言无关），事件对比用它，
+# 不依赖 _last_health 的分桶。
+_last_overall: Optional[str] = None
 _last_event_emit: float = 0.0
 
 # P1-1：共享 snapshot 缓存 + 单飞锁（REST / WebSocket 不各自重复跑 collector）
 _SNAPSHOT_TTL = 2.0
 _snapshot_lock = asyncio.Lock()
-_snapshot_cache: dict = {"data": None, "ts": 0.0}
+# locale -> {"data": snap, "ts": float}：TTL 与单飞锁保持不变，只是按语言分桶，
+# 两个不同语言的标签页不再互相污染。
+_snapshot_cache: dict[str, dict] = {}
 # P1-1：telemetry 落盘限频（最大每 60 秒一次，2 秒轮询不写库）
 _TELEMETRY_INTERVAL = 60.0
 _last_telemetry_ts: float = 0.0
@@ -94,13 +101,12 @@ def _detect_events(snap: dict, prev: dict) -> list[dict]:
     for sid in sess_old - sess_new:
         events.append({"type": "session", "sub": sid, "event": "end", "ts": now})
 
-    # 健康等级变化
-    if _last_health and snap.get("_health"):
-        old_lvl = _last_health.get("overall")
+    # 健康等级变化（overall 与语言无关，用全局 _last_overall 比对）
+    if _last_overall is not None and snap.get("_health"):
         new_lvl = snap["_health"].get("overall")
-        if old_lvl != new_lvl:
+        if _last_overall != new_lvl:
             events.append({"type": "health", "sub": "overall", "event": "change",
-                           "from": old_lvl, "to": new_lvl, "ts": now})
+                           "from": _last_overall, "to": new_lvl, "ts": now})
 
     # gateway 存活变化
     old_alive = bool((prev or {}).get("gateway", {}).get("alive"))
@@ -166,19 +172,19 @@ def _maybe_telemetry(snap: dict, health: dict) -> None:
 
 
 async def _get_snapshot(locale: str = "zh") -> dict:
-    """共享快照：2 秒内复用 + 单飞锁。
+    """共享快照：2 秒内复用 + 单飞锁，按 locale 分桶。
 
     REST /snapshot 与 WebSocket /events 共用同一份快照，
     同一时间不会并发重复跑完整 collector，telemetry 落盘也由
     限频统一控制 —— 前端 2 秒级实时体验不变。
 
-    locale 说明：collector/health 文案跟随触发本次刷新的请求的 locale。
-    缓存粒度仍是全局单份（不按 locale 分桶）——单用户 loopback dashboard
-    下这足够；两个浏览器标签同时开不同语言时，TTL 窗口内（≤2s）可能有一份
-    暂时用了另一个标签的语言，下一次刷新即自我纠正。
+    缓存按 resolve_locale() 归一化后的语言分桶：两个标签页开不同语言时
+    各取各的那份，不再互相污染（单飞锁仍是全局一把，TTL 仍是 2 秒）。
+    落盘走 incidents[].title/detail（恒 zh，见 rules._inc_text），与触发
+    本次刷新的语言无关。
     """
-    global _last_snapshot, _last_health
-    cache = _snapshot_cache
+    global _last_snapshot, _last_overall
+    cache = _snapshot_cache.setdefault(locale, {"data": None, "ts": 0.0})
     now = time.time()
     if cache["data"] is not None and now - cache["ts"] < _SNAPSHOT_TTL:
         return cache["data"]
@@ -193,7 +199,8 @@ async def _get_snapshot(locale: str = "zh") -> dict:
         snap["_events"] = events
         _maybe_telemetry(snap, health)
         _last_snapshot = snap
-        _last_health = health
+        _last_overall = health.get("overall")
+        _last_health[locale] = health
         cache["data"] = snap
         cache["ts"] = time.time()
         return snap
@@ -247,15 +254,17 @@ async def get_timeline_stats() -> dict:
 async def get_health(locale: str = "zh") -> dict:
     """只跑健康评估（轻量，不重算快照）+ API 版本契约（Desktop 协商用）。
 
-    locale 只在需要重算快照时生效（见 _get_snapshot 的说明）；命中
-    _last_health 内存缓存时直接复用上一次快照算出的文案。
+    内存缓存按 locale 分桶命中：请求 en 时不会拿到上一次 zh 请求算出的文案；
+    该语言还没算过就走一次快照（受同一把单飞锁与 2s TTL 约束）。
     """
     from hud import version
-    if _last_health is not None:
-        out = dict(_last_health)
+    resolved = resolve_locale(locale)
+    cached = _last_health.get(resolved)
+    if cached is not None:
+        out = dict(cached)
         out.update(version.api_version_payload())
         return out
-    snap = await _get_snapshot(resolve_locale(locale))
+    snap = await _get_snapshot(resolved)
     out = dict(snap["_health"])
     out.update(version.api_version_payload())
     return out

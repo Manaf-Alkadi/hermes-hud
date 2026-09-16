@@ -22,7 +22,6 @@ structured (key + args), which is a larger change than this patch makes.
 
 from __future__ import annotations
 
-_ALIASES = {"zh-hant": "zh"}
 _SUPPORTED = {"zh", "en", "fr", "ar"}
 
 TEMPLATES: dict[str, dict[str, str]] = {
@@ -437,11 +436,16 @@ TEMPLATES: dict[str, dict[str, str]] = {
 
 
 def resolve_locale(raw: str | None) -> str:
-    """Normalize a client-supplied locale string; unknown values fall back to English."""
+    """Normalize a client-supplied locale string; unknown values fall back to English.
+
+    Case-insensitive and matches on the primary language subtag (RFC 5646), so
+    region/script variants (``zh-CN``, ``zh-Hant``, ``fr-FR``, ``ZH-HANT``, ...)
+    resolve to their base language instead of silently falling back to English.
+    """
     if not raw:
         return "zh"
-    raw = _ALIASES.get(raw, raw)
-    return raw if raw in _SUPPORTED else "en"
+    primary = raw.strip().lower().replace("_", "-").split("-", 1)[0]
+    return primary if primary in _SUPPORTED else "en"
 
 
 def t(key: str, locale: str, **kwargs: object) -> str:
