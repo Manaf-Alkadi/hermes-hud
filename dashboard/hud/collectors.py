@@ -245,11 +245,16 @@ def _db_sizes() -> dict:
 
 
 def collect_db(locale: str = "zh") -> dict:
-    """state.db 只读统计：会话数、消息数、usage 汇总、文件体积。"""
+    """state.db 只读统计：会话数、消息数、usage 汇总、文件体积。
+
+    error 是按 locale 渲染的展示文案；error_key/error_args 与语言无关
+    （模板 key + 原始异常文本），rules 据此渲染恒 zh 的 canonical 事故 detail。
+    """
     out: dict[str, Any] = {"error": None, "sizes": _db_sizes()}
     conn = _ro_connect(HERMES_HOME / "state.db")
     if conn is None:
-        out["error"] = t("err_statedb_conn_failed", locale)
+        out["error_key"], out["error_args"] = "err_statedb_conn_failed", {}
+        out["error"] = t(out["error_key"], locale)
         return out
     try:
         cur = conn.cursor()
@@ -335,7 +340,8 @@ def collect_db(locale: str = "zh") -> dict:
         out["today_sessions"]["aux_est_cost"] = row[0]
         out["today_sessions"]["aux_actual_cost"] = row[1]
     except Exception as exc:
-        out["error"] = t("err_query_failed", locale, exc=exc)
+        out["error_key"], out["error_args"] = "err_query_failed", {"exc": str(exc)}
+        out["error"] = t(out["error_key"], locale, **out["error_args"])
     finally:
         try:
             conn.close()

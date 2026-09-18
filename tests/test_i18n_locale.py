@@ -7,15 +7,23 @@
   3. /snapshot 缓存按 locale 分桶
   4. resolve_locale 归一化 region/script 子标签（zh-CN / zh-Hant / fr-FR ...）
 
-全部用纯 pytest 跑（不依赖 macOS / Chrome / hermes CLI），CI 里真实执行。
+第二轮评审：
+  A. db:unreadable 的 canonical detail 不得随语言变化（真实 collect_db 两条失败路径）
+  B. /health 按语言分桶后仍要随 2s TTL 刷新，不能因为只有别的语言在轮询而一直旧
+
+全部用纯 pytest 跑（不依赖 macOS / Chrome / hermes CLI），CI 里真实执行；
+唯一例外是 B 的 TestClient 用例，需要真实 fastapi + httpx，CI 只装 pytest 时 skip。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import sqlite3
 import sys
 import tempfile
+import time
 import types
 from pathlib import Path
 
@@ -98,7 +106,6 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(plugin_api, "store", storage.TelemetryStore(db_path=tmp_path / "telemetry.db"))
     monkeypatch.setattr(plugin_api.collectors, "build_snapshot", _snapshot_for)
     monkeypatch.setattr(plugin_api, "_snapshot_cache", {})
-    monkeypatch.setattr(plugin_api, "_last_health", {})
     monkeypatch.setattr(plugin_api, "_last_snapshot", None)
     monkeypatch.setattr(plugin_api, "_last_overall", None)
     # 落盘限频默认 60s，测试里要每次都真的写
@@ -273,7 +280,7 @@ def test_health_normalizes_locale_before_caching(api) -> None:
     cn, hant = asyncio.run(scenario())
     assert cn["incidents"][0]["display_title"] == "Gateway 不存活"
     assert hant["incidents"][0]["display_title"] == "Gateway 不存活"
-    assert set(api._last_health) == {"zh"}
+    assert set(api._snapshot_cache) == {"zh"}
 
 
 # --------------------------------------------------------------------------
@@ -301,3 +308,166 @@ def test_health_contract_identical_across_locales(api) -> None:
     assert len({p["overall"] for p in payloads}) == 1
     assert len({tuple(sorted(p["counts"].items())) for p in payloads}) == 1
     assert len({tuple(sorted(i["fingerprint"] for i in p["incidents"])) for p in payloads}) == 1
+
+
+# --------------------------------------------------------------------------
+# 第二轮评审 A / B 共用：真实 collector + 假时钟
+#
+# 真实：collectors.build_snapshot（含 collect_db / collect_gateway）、rules、
+#       _get_snapshot 的分桶缓存 + 单飞锁、_maybe_telemetry 落盘（60s 限频不改）、
+#       TelemetryStore 读回。
+# 替换：HERMES_HOME 与 telemetry.db 指到临时目录；plugin_api 里的 time 换成
+#       可推进的假时钟（只影响 2s TTL 与 60s 落盘窗口的判定，不 sleep）。
+# --------------------------------------------------------------------------
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1_000_000.0
+
+    def time(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture()
+def real_api(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    clock = _Clock()
+    monkeypatch.setattr(plugin_api.collectors, "HERMES_HOME", home)
+    monkeypatch.setattr(plugin_api, "store", storage.TelemetryStore(db_path=tmp_path / "telemetry.db"))
+    monkeypatch.setattr(plugin_api, "time", types.SimpleNamespace(time=clock.time))
+    monkeypatch.setattr(plugin_api, "_snapshot_cache", {})
+    monkeypatch.setattr(plugin_api, "_last_snapshot", None)
+    monkeypatch.setattr(plugin_api, "_last_overall", None)
+    monkeypatch.setattr(plugin_api, "_last_telemetry_ts", 0.0)
+    return plugin_api, home, clock
+
+
+# --------------------------------------------------------------------------
+# A：db:unreadable 的 canonical detail 不随语言变化
+# --------------------------------------------------------------------------
+
+def _make_statedb_without_sessions(home: Path) -> None:
+    """能打开的 state.db，但缺 sessions 表 → 走 collect_db 的查询失败分支。"""
+    conn = sqlite3.connect(home / "state.db")
+    conn.execute("CREATE TABLE unrelated (x INTEGER)")
+    conn.commit()
+    conn.close()
+
+
+def _db_incident_row(api) -> dict:
+    rows = [r for r in api.store.list_incidents() if r["fingerprint"] == "db:unreadable"]
+    assert len(rows) == 1
+    return rows[0]
+
+
+@pytest.mark.parametrize("fault,canonical", [
+    ("connect", "state.db 只读连接失败"),            # 临时 HOME 下没有 state.db
+    ("query", "查询失败: no such table: sessions"),  # state.db 缺 sessions 表
+], ids=["connect", "query"])
+def test_db_unreadable_canonical_detail_stable_across_locales(real_api, fault, canonical) -> None:
+    """同一个故障依次在 zh/en/fr/ar 下各做一次有效落盘，每次都从 DB 读回。"""
+    api, home, clock = real_api
+    if fault == "query":
+        _make_statedb_without_sessions(home)
+
+    persisted, displayed = [], []
+    for loc in LOCALES:
+        snap = asyncio.run(api._get_snapshot(loc))
+        inc = next(i for i in snap["_health"]["incidents"] if i["fingerprint"] == "db:unreadable")
+        displayed.append(inc["display_detail"])
+        persisted.append(_db_incident_row(api)["detail"])
+        clock.advance(61)   # 跨过 60s 落盘窗口（也跨过 2s TTL），下一种语言是一次有效写入
+
+    assert persisted == [canonical] * len(LOCALES)
+    assert len(set(displayed)) == len(LOCALES), displayed   # 展示文案仍按语言翻译
+    row = _db_incident_row(api)
+    assert row["title"] == t("db_unreadable_title", "zh")
+    assert row["observations"] == len(LOCALES)
+    assert row["state_changes"] == 1
+
+
+# --------------------------------------------------------------------------
+# B：/health 分桶后仍随 TTL 刷新
+# --------------------------------------------------------------------------
+
+def _set_gateway(home: Path, running: bool) -> None:
+    """真实 collect_gateway 读这个文件；pid 用当前进程，保证“存活”检查为真。"""
+    (home / "gateway_state.json").write_text(json.dumps({
+        "pid": os.getpid(),
+        "gateway_state": "running" if running else "stopped",
+        "updated_at": time.time(),
+    }))
+
+
+def _gateway_down(health: dict) -> bool:
+    return any(i["fingerprint"] == "gateway:not-alive" for i in health["incidents"])
+
+
+def test_health_cache_hit_within_ttl_then_refresh_after_ttl(real_api) -> None:
+    """路由函数直调（fastapi 缺失时 router 是 stub，get_health 就是注册的那个协程）。"""
+    api, home, clock = real_api
+    _set_gateway(home, running=True)
+    assert not _gateway_down(asyncio.run(api.get_health(locale="zh")))
+
+    _set_gateway(home, running=False)
+    clock.advance(1)     # TTL 内：命中缓存，仍是旧状态
+    assert not _gateway_down(asyncio.run(api.get_health(locale="zh")))
+
+    clock.advance(2)     # 超过 2s TTL：重算
+    assert _gateway_down(asyncio.run(api.get_health(locale="zh")))
+
+
+@pytest.mark.parametrize("start_running", [True, False], ids=["normal-to-fault", "fault-to-recovery"])
+def test_health_refreshes_when_only_other_locale_polled(real_api, start_running) -> None:
+    """zh / en 都建好缓存后状态翻转，只刷新 en；zh 的 /health 也必须反映新状态。"""
+    api, home, clock = real_api
+    _set_gateway(home, running=start_running)
+
+    async def establish() -> None:
+        await api.get_health(locale="zh")
+        await api._get_snapshot("en")
+    asyncio.run(establish())
+
+    _set_gateway(home, running=not start_running)
+    clock.advance(3)
+    en = asyncio.run(api._get_snapshot("en"))["_health"]
+    assert _gateway_down(en) == start_running
+
+    for _ in range(2):   # 重复请求也不能卡在旧状态
+        zh = asyncio.run(api.get_health(locale="zh"))
+        assert _gateway_down(zh) == start_running
+        clock.advance(3)
+
+
+@pytest.mark.parametrize("start_running", [True, False], ids=["normal-to-fault", "fault-to-recovery"])
+def test_health_refreshes_via_real_http_routes(real_api, start_running) -> None:
+    """同上场景，走真实 FastAPI 路由（TestClient）。CI 只装 pytest，没有 fastapi/httpx 时 skip。"""
+    pytest.importorskip("httpx")
+    testclient = pytest.importorskip("fastapi.testclient")
+    from fastapi import FastAPI
+
+    api, home, clock = real_api
+    app = FastAPI()
+    app.include_router(api.router, prefix="/api/plugins/hermes-hud")
+    client = testclient.TestClient(app)
+    base = "/api/plugins/hermes-hud"
+
+    _set_gateway(home, running=start_running)
+    zh = client.get(f"{base}/health", params={"locale": "zh"}).json()
+    assert _gateway_down(zh) == (not start_running)
+    client.get(f"{base}/snapshot", params={"locale": "en"})
+
+    _set_gateway(home, running=not start_running)
+    clock.advance(3)
+    en = client.get(f"{base}/snapshot", params={"locale": "en"}).json()["_health"]
+    assert _gateway_down(en) == start_running
+
+    for _ in range(2):
+        zh = client.get(f"{base}/health", params={"locale": "zh"}).json()
+        assert _gateway_down(zh) == start_running
+        assert zh["api_schema_version"] == 1
+        clock.advance(3)

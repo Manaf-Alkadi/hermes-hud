@@ -43,11 +43,8 @@ store = storage.TelemetryStore()
 # ---------------------------------------------------------------------------
 
 _last_snapshot: Optional[dict] = None
-# 按 locale 分桶：/health 命中缓存时直接回给客户端，含事故展示文案，
-# 单份全局缓存会把另一个语言的内容回给当前请求（见 _get_snapshot）。
-_last_health: dict[str, dict] = {}
 # overall 是 normal/warning/critical 代码（与语言无关），事件对比用它，
-# 不依赖 _last_health 的分桶。
+# 不依赖按语言分桶的快照缓存。
 _last_overall: Optional[str] = None
 _last_event_emit: float = 0.0
 
@@ -200,7 +197,6 @@ async def _get_snapshot(locale: str = "zh") -> dict:
         _maybe_telemetry(snap, health)
         _last_snapshot = snap
         _last_overall = health.get("overall")
-        _last_health[locale] = health
         cache["data"] = snap
         cache["ts"] = time.time()
         return snap
@@ -252,19 +248,13 @@ async def get_timeline_stats() -> dict:
 
 @router.get("/health")
 async def get_health(locale: str = "zh") -> dict:
-    """只跑健康评估（轻量，不重算快照）+ API 版本契约（Desktop 协商用）。
+    """健康评估 + API 版本契约（Desktop 协商用）。
 
-    内存缓存按 locale 分桶命中：请求 en 时不会拿到上一次 zh 请求算出的文案；
-    该语言还没算过就走一次快照（受同一把单飞锁与 2s TTL 约束）。
+    直接取该 locale 的快照缓存（同一把单飞锁 + 2s TTL）：过期即重算，
+    不会因为只有别的语言在轮询 /snapshot 而一直返回旧状态。
     """
     from hud import version
-    resolved = resolve_locale(locale)
-    cached = _last_health.get(resolved)
-    if cached is not None:
-        out = dict(cached)
-        out.update(version.api_version_payload())
-        return out
-    snap = await _get_snapshot(resolved)
+    snap = await _get_snapshot(resolve_locale(locale))
     out = dict(snap["_health"])
     out.update(version.api_version_payload())
     return out

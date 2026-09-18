@@ -120,11 +120,20 @@ def evaluate_snapshot(snap: dict, locale: str = "zh") -> dict:
         "message": t("db_ok", locale) if db_ok else t("db_error", locale, error=db.get("error")),
     })
     if not db_ok:
+        # db["error"] 已按请求语言渲染，只能进 display_detail；canonical detail
+        # 由与语言无关的 error_key/error_args 按 zh 渲染（见 collectors.collect_db）。
+        # 没带 error_key 的调用方沿用原始 error 文本。
+        if db.get("error_key"):
+            text = _inc_text("db_unreadable_title", db["error_key"], locale,
+                             **(db.get("error_args") or {}))
+        else:
+            text = _inc_text("db_unreadable_title", None, locale, detail_raw=str(db.get("error")))
+        text["detail"] = text["detail"][:200]
+        text["display_detail"] = text["display_detail"][:200]
         incidents.append({
             "fingerprint": "db:unreadable",
             "severity": "critical",
-            **_inc_text("db_unreadable_title", None, locale,
-                        detail_raw=str(db.get("error"))[:200]),
+            **text,
         })
 
     # ---- critical/warning: 磁盘 ----
